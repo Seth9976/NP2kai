@@ -425,17 +425,28 @@ if(NOT CMAKE_BUILD_TYPE)
 	set(CMAKE_BUILD_TYPE "RelWithDebInfo")
 endif()
 # Compiler options shared by C and C++ sources.
-set(COMMON_C_FLAGS "-Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-int-conversion")
-set(COMMON_CXX_FLAGS "${COMMON_C_FLAGS} -fno-sized-deallocation")
-if(NOT EMSCRIPTEN)
-set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g -Wall -DDEBUG -DTRACE ${COMMON_CXX_FLAGS}")
-set(CMAKE_CXX_FLAGS_RELEASE "-O2 -Wall -DNDEBUG ${COMMON_CXX_FLAGS}")
-set(CMAKE_CXX_FLAGS_MINSIZEREL "-Os -Wall")
-set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-Og -g -Wall -DNDEBUG")
-set(CMAKE_C_FLAGS ${COMMON_C_FLAGS})
-else()
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${COMMON_CXX_FLAGS}")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${COMMON_C_FLAGS}")
+# Compiler options shared by C and C++ sources.  
+if(MSVC)  
+	# MSVC 没有 -Wno-implicit-function-declaration / -Wno-incompatible-pointer-types /  
+	# -Wno-int-conversion / -fno-sized-deallocation 这些 GCC/Clang 专用开关的直接等价项,  
+	# 用对应的 /wd<警告号> 屏蔽最接近的 MSVC 警告(隐式函数声明 C 语言下对应 C4013,  
+	# 不兼容指针/整数转换对应 C4133/C4047/C4024),避免历史代码里大量的隐式声明/  
+	# 不规范指针转换导致构建被当作错误中断。  
+	set(COMMON_C_FLAGS "/wd4013 /wd4133 /wd4047 /wd4024")  
+	set(COMMON_CXX_FLAGS "${COMMON_C_FLAGS}")  
+else()  
+	set(COMMON_C_FLAGS "-Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-int-conversion")  
+	set(COMMON_CXX_FLAGS "${COMMON_C_FLAGS} -fno-sized-deallocation")  
+endif()  
+if(NOT EMSCRIPTEN)  
+set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g -Wall -DDEBUG -DTRACE ${COMMON_CXX_FLAGS}")  
+set(CMAKE_CXX_FLAGS_RELEASE "-O2 -Wall -DNDEBUG ${COMMON_CXX_FLAGS}")  
+set(CMAKE_CXX_FLAGS_MINSIZEREL "-Os -Wall")  
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-Og -g -Wall -DNDEBUG")  
+set(CMAKE_C_FLAGS ${COMMON_C_FLAGS})  
+else()  
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${COMMON_CXX_FLAGS}")  
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${COMMON_C_FLAGS}")  
 endif()
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 
