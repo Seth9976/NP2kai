@@ -1,0 +1,39 @@
+name: build-windows  
+  
+on:  
+  workflow_dispatch:  
+  push:  
+    branches: [master]  
+  
+jobs:  
+  build-windows:  
+    runs-on: windows-2022  
+    steps:  
+      - uses: actions/checkout@v4  
+        with:  
+          fetch-depth: 0  
+          fetch-tags: true  
+  
+      - uses: lukka/get-cmake@latest  
+  
+      - uses: ilammy/msvc-dev-cmd@v1  
+  
+      - name: 克隆 vcpkg  
+        run: git clone https://github.com/microsoft/vcpkg.git C:/vcpkg  
+  
+      - name: 引导 vcpkg  
+        run: C:/vcpkg/bootstrap-vcpkg.bat  
+  
+      - name: 安装依赖库  
+        run: C:/vcpkg/vcpkg install openssl sdl2 sdl2-mixer sdl2-ttf libusb --triplet x64-windows  
+  
+      - name: 配置 CMake 工程  
+        run: cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release  
+  
+      - name: 编译工程  
+        run: cmake --build build --config Release  
+  
+      - uses: actions/upload-artifact@v4  
+        with:  
+          name: np2kai-windows  
+          path: build/out
