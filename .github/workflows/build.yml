@@ -13,11 +13,72 @@ jobs:
         with:  
           fetch-depth: 0  
           fetch-tags: true  
+          submodules: false   # 子模块我们自己按需拉取,避免连带拉取巨大的 vst3sdk  
+  
+      - name: 拉取必要的 git 子模块 (FindWDK)  
+        shell: pwsh  
+        run: |  
+          # 只拉取 CMakeLists.txt 实际用到的 cmake/FindWDK,  
+          # vst3sdk / cmake/vst3_cmake 默认 USE_VST3SDK=OFF 时用不到,跳过以节省时间  
+          git submodule update --init --depth 1 cmake/FindWDK  
+          if (-not (Test-Path "cmake/FindWDK/cmake/WDKConfig.cmake") -and -not (Test-Path "cmake/FindWDK/cmake/FindWDK.cmake")) {  
+            Write-Error "cmake/FindWDK 子模块拉取失败,目录内容:"  
+            Get-ChildItem -Recurse "cmake/FindWDK" -ErrorAction SilentlyContinue  
+            exit 1  
+          }  
+          Write-Host "FindWDK 子模块文件列表:"  
+          Get-ChildItem -Recurse "cmake/FindWDK/cmake"  
   
       - uses: lukka/get-cmake@latest  
   
       - uses: ilammy/msvc-dev-cmd@v1  
-    
+  
+      - name: 嗅探/安装 Windows Driver Kit (WDK)  
+        shell: pwsh  
+        run: |  
+          function Find-WdkRoot {  
+            # 不硬编码任何版本号,主动从注册表读取已安装的 WDK/Windows Kits 根目录  
+            $root = $null  
+            try {  
+              $root = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots" -Name "KitsRoot10" -ErrorAction Stop).KitsRoot10  
+            } catch {  
+              $root = $null  
+            }  
+            if (-not $root) { return $null }  
+  
+            # 再嗅探该根目录下是否真的带有 km (kernel mode) 头文件/库,  
+            # 这是 WDK 相对于普通 Windows SDK 的标志性目录  
+            $kmInclude = Get-ChildItem -Path (Join-Path $root "Include") -Directory -ErrorAction SilentlyContinue |  
+                         Where-Object { Test-Path (Join-Path $_.FullName "km") }  
+            if (-not $kmInclude) { return $null }  
+  
+            return $root  
+          }  
+  
+          $wdkRoot = Find-WdkRoot  
+          if ($wdkRoot) {  
+            Write-Host "检测到已安装的 WDK, 根目录: $wdkRoot"  
+          } else {  
+            Write-Host "未检测到 WDK, 开始通过 choco 安装..."  
+            choco install windowsdriverkit10 -y --no-progress  
+            if ($LASTEXITCODE -ne 0) {  
+              Write-Error "choco install windowsdriverkit10 失败, exit code $LASTEXITCODE"  
+              exit 1  
+            }  
+  
+            # 安装完成后重新嗅探一次确认  
+            $wdkRoot = Find-WdkRoot  
+            if (-not $wdkRoot) {  
+              Write-Error "安装 WDK 后仍未检测到 km 头文件目录, 请检查 choco 包是否正常安装"  
+              exit 1  
+            }  
+            Write-Host "安装完成, 嗅探到 WDK 根目录: $wdkRoot"  
+          }  
+  
+          # 把嗅探到的信息写入 GITHUB_ENV, 仅用于后续步骤打印/诊断,  
+          # find_package(WDK) 本身会再次通过注册表自动定位, 不依赖这个变量硬编码路径  
+          echo "DETECTED_WDK_ROOT=$wdkRoot" >> $env:GITHUB_ENV  
+  
       - name: 引导 vcpkg  
         run: C:/vcpkg/bootstrap-vcpkg.bat  
   
@@ -25,7 +86,12 @@ jobs:
         run: C:/vcpkg/vcpkg install openssl sdl2 sdl2-mixer sdl2-ttf libusb --triplet x64-windows  
   
       - name: 配置 CMake 工程  
-        run: cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release  
+        shell: pwsh  
+        run: |  
+          Write-Host "本次构建探测到的 WDK 根目录: $env:DETECTED_WDK_ROOT"  
+          cmake -S . -B build -G Ninja `  
+            -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake `  
+            -DCMAKE_BUILD_TYPE=Release  
   
       - name: 编译工程  
         run: cmake --build build --config Release  
