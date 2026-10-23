@@ -1,24 +1,173 @@
-name: encoding-check  
+name: strict-encoding-and-c4828-guard  
   
 on:  
-  push:  
-  pull_request:  
   workflow_dispatch:  
+  push:  
+    branches: [wx_alpha]  
+  pull_request:  
+    branches: [wx_alpha]  
   
 jobs:  
-  check-and-fix-encoding:  
+  fix-encoding:  
     runs-on: ubuntu-latest  
+    outputs:  
+      changed: ${{ steps.convert.outputs.changed }}  
     steps:  
       - uses: actions/checkout@v4  
+        with:  
+          fetch-depth: 0  
   
-      - name: 严格校验 UTF-8 并将 Shift-JIS(CP932) 源文件无损转码为 UTF-8，消除 0x5C 截断与 C4828  
-        run: sudo apt-get update -y && sudo apt-get install -y iconv file >/dev/null 2>&1; find . -path ./.git -prune -o -path ./.github -prune -o -type f \( -iname "*.c" -o -iname "*.cc" -o -iname "*.cpp" -o -iname "*.cxx" -o -iname "*.h" -o -iname "*.hh" -o -iname "*.hpp" -o -iname "*.hxx" -o -iname "*.inc" -o -iname "*.mcr" \) -print0 | xargs -0 -I{} sh -c 'iconv -f UTF-8 -t UTF-8 "{}" -o /dev/null 2>/dev/null && exit 0; iconv -f CP932 -t UTF-8//TRANSLIT "{}" -o "{}.utf8tmp" 2>/dev/null && mv "{}.utf8tmp" "{}" && echo "[FIXED] {} : CP932 -> UTF-8" || echo "[ERROR] {} : 既非合规UTF-8也无法按CP932解码，请人工检查"'  
+      - uses: actions/setup-python@v5  
+        with:  
+          python-version: "3.11"  
   
-      - name: 再次严格校验，确认不存在任何非法 UTF-8 字节序列（即 C4828 根源已清除）  
-        run: find . -path ./.git -prune -o -path ./.github -prune -o -type f \( -iname "*.c" -o -iname "*.cc" -o -iname "*.cpp" -o -iname "*.cxx" -o -iname "*.h" -o -iname "*.hh" -o -iname "*.hpp" -o -iname "*.hxx" -o -iname "*.inc" -o -iname "*.mcr" \) -print0 | xargs -0 -I{} sh -c 'iconv -f UTF-8 -t UTF-8 "{}" -o /dev/null 2>/dev/null || { echo "::error file={}::仍存在非合规 UTF-8 字节，转码失败"; exit 1; }'  
+      - name: 校验并修复源文件与头文件编码  
+        id: convert  
+        run: |  
+          python3 - "$GITHUB_WORKSPACE" <<'PYEOF'  
+          import os  
+          import sys  
+          import pathlib  
   
-      - name: 自动提交转码结果  
+          root = pathlib.Path(sys.argv[1]).resolve()  
+          target_ext = {".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".inc"}  
+          skip_dirs = {".git", ".github", "node_modules", ".venv", "build", "out"}  
+  
+          changed_files = []  
+          failed_files = []  
+  
+          for dirpath, dirnames, filenames in os.walk(root):  
+              dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]  
+              for name in filenames:  
+                  ext = pathlib.Path(name).suffix.lower()  
+                  if ext not in target_ext:  
+                      continue  
+                  fpath = pathlib.Path(dirpath) / name  
+                  raw = fpath.read_bytes()  
+                  try:  
+                      raw.decode("utf-8", errors="strict")  
+                      continue  
+                  except UnicodeDecodeError:  
+                      pass  
+                  try:  
+                      text = raw.decode("cp932", errors="strict")  
+                  except UnicodeDecodeError as exc:  
+                      failed_files.append((str(fpath.relative_to(root)), str(exc)))  
+                      continue  
+                  new_bytes = text.encode("utf-8")  
+                  if new_bytes != raw:  
+                      tmp = fpath.with_suffix(fpath.suffix + ".tmp_utf8")  
+                      tmp.write_bytes(new_bytes)  
+                      os.replace(tmp, fpath)  
+                      changed_files.append(str(fpath.relative_to(root)))  
+  
+          print("已转换为 UTF-8 的文件数量:", len(changed_files))  
+          for item in changed_files:  
+              print("  [CONVERTED]", item)  
+  
+          if failed_files:  
+              print("以下文件既不是合法 UTF-8 也不是合法 CP932，终止流程:")  
+              for name, err in failed_files:  
+                  print("  [UNDECODABLE]", name, err)  
+              sys.exit(1)  
+  
+          github_output = os.environ.get("GITHUB_OUTPUT")  
+          with open(github_output, "a", encoding="utf-8") as fh:  
+              fh.write("changed=" + ("true" if changed_files else "false") + "\n")  
+          PYEOF  
+  
+      - name: 复核转换结果必须全部为合法 UTF-8  
+        run: |  
+          python3 - "$GITHUB_WORKSPACE" <<'PYEOF'  
+          import os  
+          import sys  
+          import pathlib  
+  
+          root = pathlib.Path(sys.argv[1]).resolve()  
+          target_ext = {".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".inc"}  
+          skip_dirs = {".git", ".github", "node_modules", ".venv", "build", "out"}  
+  
+          bad = []  
+          for dirpath, dirnames, filenames in os.walk(root):  
+              dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]  
+              for name in filenames:  
+                  if pathlib.Path(name).suffix.lower() not in target_ext:  
+                      continue  
+                  fpath = pathlib.Path(dirpath) / name  
+                  try:  
+                      fpath.read_bytes().decode("utf-8", errors="strict")  
+                  except UnicodeDecodeError:  
+                      bad.append(str(fpath.relative_to(root)))  
+  
+          if bad:  
+              print("仍然存在非合法 UTF-8 文件:")  
+              for item in bad:  
+                  print("  [NOT-UTF8]", item)  
+              sys.exit(1)  
+  
+          print("全部源文件与头文件均为合法 UTF-8。")  
+          PYEOF  
+  
+      - name: 提交编码修复结果  
+        if: steps.convert.outputs.changed == 'true'  
         uses: stefanzweifel/git-auto-commit-action@v5  
         with:  
-          commit_message: "chore: 自动将 Shift-JIS/CP932 源文件无损转换为 UTF-8，消除 C4828"  
-          file_pattern: "*.c *.cc *.cpp *.cxx *.h *.hh *.hpp *.hxx *.inc *.mcr"
+          commit_message: "chore(encoding): 将 Shift-JIS/CP932 源文件无损转换为标准 UTF-8"  
+          file_pattern: "**/*.c **/*.h **/*.cpp **/*.cc **/*.cxx **/*.hpp **/*.hh **/*.inc"  
+  
+  verify-no-c4828:  
+    needs: fix-encoding  
+    runs-on: windows-2022  
+    steps:  
+      - uses: actions/checkout@v4  
+        with:  
+          ref: ${{ github.head_ref || github.ref }}  
+  
+      - uses: ilammy/msvc-dev-cmd@v1  
+  
+      - name: 对全部源文件与头文件执行语法级编译检查确保零 C4828  
+        shell: pwsh  
+        run: |  
+          python3 - "$env:GITHUB_WORKSPACE" <<'PYEOF'  
+          import os  
+          import sys  
+          import pathlib  
+          import subprocess  
+  
+          root = pathlib.Path(sys.argv[1]).resolve()  
+          target_ext = {".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".inc"}  
+          skip_dirs = {".git", ".github", "node_modules", ".venv", "build", "out"}  
+  
+          failures = []  
+          for dirpath, dirnames, filenames in os.walk(root):  
+              dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]  
+              for name in filenames:  
+                  ext = pathlib.Path(name).suffix.lower()  
+                  if ext not in target_ext:  
+                      continue  
+                  fpath = pathlib.Path(dirpath) / name  
+                  if ext in {".h", ".hpp", ".hh", ".inc"}:  
+                      probe = fpath.with_suffix(".c4828probe.c")  
+                      probe.write_text('#include "' + fpath.name + '"\n', encoding="utf-8")  
+                      compile_target = probe  
+                  else:  
+                      compile_target = fpath  
+                  result = subprocess.run(  
+                      ["cl", "/nologo", "/c", "/Zs", "/W4", "/utf-8", "/I", str(fpath.parent), str(compile_target)],  
+                      capture_output=True, text=True, cwd=str(fpath.parent),  
+                  )  
+                  combined = result.stdout + result.stderr  
+                  if "C4828" in combined:  
+                      failures.append((str(fpath.relative_to(root)), combined))  
+                  if ext in {".h", ".hpp", ".hh", ".inc"}:  
+                      probe.unlink(missing_ok=True)  
+  
+          if failures:  
+              print("检测到 C4828 警告，Shift-JIS 尾字节 0x5C 截断问题未彻底消除:")  
+              for name, log in failures:  
+                  print("  [C4828]", name)  
+                  print(log)  
+              sys.exit(1)  
+  
+          print("全部源文件与头文件编译检查通过，零 C4828 警告。")  
+          PYEOF
