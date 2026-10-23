@@ -8,8 +8,6 @@ on:
 jobs:
   build-windows:
     runs-on: windows-2022
-    env:
-      VCPKG_ROOT: C:/vcpkg
     steps:
       - name: 检出源码及依赖子模块
         uses: actions/checkout@v4
@@ -26,9 +24,10 @@ jobs:
         with:
           arch: x64
 
-      - name: 嗅探系统 WDK 与 Windows Kits 注册表信息
+      - name: 修复环境变量与嗅探系统信息
         shell: pwsh
         run: |
+          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=C:\vcpkg"
           $regKey = 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots'
           if (-not (Test-Path $regKey)) { $regKey = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots' }
           $kitsRoot = (Get-ItemProperty -Path $regKey -ErrorAction SilentlyContinue).KitsRoot10
@@ -36,12 +35,17 @@ jobs:
           if ($kitsRoot -and (Test-Path "$kitsRoot\Include")) { $matchedDir = Get-ChildItem "$kitsRoot\Include" | Where-Object { $_.PSIsContainer -and ($_.Name -match '^[0-9.]+$') } | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1; if ($matchedDir) { $wdkVer = $matchedDir.Name } }
           Add-Content -Path $env:GITHUB_ENV -Value "ENV_DETECTED_KIT_ROOT=$kitsRoot"
           Add-Content -Path $env:GITHUB_ENV -Value "ENV_DETECTED_WDK_VER=$wdkVer"
+          $srcIncludeDirs = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Include *.h,*.hpp | Where-Object { $_.FullName -notmatch '[\\/](\.git|build|vst3sdk)[\\/]' } | Select-Object -ExpandProperty DirectoryName -Unique
+          $injectedInclude = ($srcIncludeDirs -join ';') + ';' + $env:INCLUDE
+          Add-Content -Path $env:GITHUB_ENV -Value "INCLUDE=$injectedInclude"
+          Add-Content -Path $env:GITHUB_ENV -Value "SNIFFED_INCLUDE_COUNT=$($srcIncludeDirs.Count)"
 
       - name: 输出环境诊断信息
         shell: pwsh
         run: |
           Write-Host "检测到的 Windows Kits 根目录: $env:ENV_DETECTED_KIT_ROOT"
           Write-Host "检测到的 Windows SDK/WDK 版本号: $env:ENV_DETECTED_WDK_VER"
+          Write-Host "嗅探到的工程头文件目录总数: $env:SNIFFED_INCLUDE_COUNT"
 
       - name: 引导 vcpkg
         run: C:/vcpkg/bootstrap-vcpkg.bat
@@ -61,7 +65,7 @@ jobs:
           $targetDir = 'dist_artifacts'
           New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
           $binFiles = Get-ChildItem -Path 'build' -Recurse -File | Where-Object { $_.Extension -in '.exe', '.dll' }
-          Write-Host '====== 嗅探到的输出文件结构 ======'
+          Write-Host '====== 嗅探到的输出二进制文件清单 ======'
           foreach ($file in $binFiles) { Write-Host "$($file.FullName) ($($file.Length) 字节)"; Copy-Item -Path $file.FullName -Destination $targetDir -Force }
           Write-Host "====== 产物收集完成，共计 $($binFiles.Count) 个文件 ======"
 
