@@ -1,126 +1,72 @@
-name: build-windows  
-  
-on:  
-  workflow_dispatch:  
-  push:  
-    branches: [wx_alpha]  
-  
-jobs:  
-  build-windows:  
-    runs-on: windows-2022  
-    steps:  
-      - uses: actions/checkout@v4  
-        with:  
-          fetch-depth: 0  
-          fetch-tags: true  
-          submodules: false   # 子模块按需拉取,避免连带拉取巨大的 vst3sdk  
-  
-      - name: 拉取必要的 git 子模块 (FindWDK)  
-        shell: pwsh  
-        run: |  
-          git submodule update --init --depth 1 cmake/FindWDK  
-          if (-not (Test-Path "cmake/FindWDK/cmake/WDKConfig.cmake") -and -not (Test-Path "cmake/FindWDK/cmake/FindWDK.cmake")) {  
-            Write-Error "cmake/FindWDK 子模块拉取失败,目录内容:"  
-            Get-ChildItem -Recurse "cmake/FindWDK" -ErrorAction SilentlyContinue  
-            exit 1  
-          }  
-          Write-Host "FindWDK 子模块文件列表:"  
-          Get-ChildItem -Recurse "cmake/FindWDK/cmake"  
-  
-      - uses: lukka/get-cmake@latest  
-  
-      - uses: ilammy/msvc-dev-cmd@v1  
-  
-      - name: 嗅探/安装 Windows Driver Kit (WDK)  
-        shell: pwsh  
-        run: |  
-          function Find-WdkRoot {  
-            $root = $null  
-            try {  
-              $root = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots" -Name "KitsRoot10" -ErrorAction Stop).KitsRoot10  
-            } catch {  
-              $root = $null  
-            }  
-            if (-not $root) { return $null }  
-  
-            $kmInclude = Get-ChildItem -Path (Join-Path $root "Include") -Directory -ErrorAction SilentlyContinue |  
-                         Where-Object { Test-Path (Join-Path $_.FullName "km") }  
-            if (-not $kmInclude) { return $null }  
-  
-            return $root  
-          }  
-  
-          $wdkRoot = Find-WdkRoot  
-          if ($wdkRoot) {  
-            Write-Host "检测到已安装的 WDK, 根目录: $wdkRoot"  
-          } else {  
-            Write-Host "未检测到 WDK, 开始通过 choco 安装..."  
-            choco install windowsdriverkit10 -y --no-progress  
-            if ($LASTEXITCODE -ne 0) {  
-              Write-Error "choco install windowsdriverkit10 失败, exit code $LASTEXITCODE"  
-              exit 1  
-            }  
-  
-            $wdkRoot = Find-WdkRoot  
-            if (-not $wdkRoot) {  
-              Write-Error "安装 WDK 后仍未检测到 km 头文件目录, 请检查 choco 包是否正常安装"  
-              exit 1  
-            }  
-            Write-Host "安装完成, 嗅探到 WDK 根目录: $wdkRoot"  
-          }  
-  
-          echo "DETECTED_WDK_ROOT=$wdkRoot" >> $env:GITHUB_ENV  
-  
-      - name: 嗅探 pkg-config (vcpkg 自带 pkgconf)  
-        shell: pwsh  
-        run: |  
-          # 只是提前诊断用: vcpkg 安装依赖之后会在 installed/<triplet>/tools/pkgconf 下  
-          # 释放 pkgconf.exe, 但 CMakeLists.txt 第 15 行的 find_package(PkgConfig)  
-          # 是在 cmake 配置阶段执行的, 真正让它找到 pkgconf 的关键是  
-          # -DCMAKE_TOOLCHAIN_FILE=.../vcpkg.cmake 必须被正确传给 cmake,  
-          # 而不是手工指定 PKG_CONFIG_EXECUTABLE 路径。  
-          Write-Host "此步骤仅用于确认 vcpkg 根目录存在:"  
-          Get-ChildItem "C:/vcpkg" -ErrorAction SilentlyContinue  
-  
-      - name: 引导 vcpkg  
-        run: C:/vcpkg/bootstrap-vcpkg.bat  
-  
-      - name: 安装依赖库  
-        run: C:/vcpkg/vcpkg install openssl sdl2 sdl2-mixer sdl2-ttf libusb --triplet x64-windows  
-  
-      - name: 配置 CMake 工程  
-        shell: pwsh  
-        run: |  
-          Write-Host "本次构建探测到的 WDK 根目录: $env:DETECTED_WDK_ROOT"  
-          $vcpkgToolchain = "C:/vcpkg/scripts/buildsystems/vcpkg.cmake"  
-          if (-not (Test-Path $vcpkgToolchain)) {  
-            Write-Error "未找到 vcpkg 工具链文件: $vcpkgToolchain, 请确认 bootstrap-vcpkg 步骤已成功执行"  
-            exit 1  
-          }  
-          $pkgconf = Get-ChildItem -Path "C:/vcpkg/installed" -Recurse -Filter "pkgconf.exe" -ErrorAction SilentlyContinue | Select-Object -First 1  
-          if ($pkgconf) {  
-            Write-Host "嗅探到 pkgconf: $($pkgconf.FullName)"  
-          } else {  
-            Write-Warning "未在 vcpkg installed 目录下嗅探到 pkgconf.exe, find_package(PkgConfig) 可能会失败"  
-          }  
-          $cmakeArgs = @(  
-            "-S", ".",  
-            "-B", "build",  
-            "-G", "Ninja",  
-            "-DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain",  
-            "-DCMAKE_BUILD_TYPE=Release"  
-          )  
-          Write-Host "cmake $($cmakeArgs -join ' ')"  
-          & cmake @cmakeArgs  
-          if ($LASTEXITCODE -ne 0) {  
-            Write-Error "cmake 配置失败, exit code $LASTEXITCODE"  
-            exit 1  
-          }  
-  
-      - name: 编译工程  
-        run: cmake --build build --config Release  
-  
-      - uses: actions/upload-artifact@v4  
-        with:  
-          name: np2kai-windows  
-          path: build/out
+name: build-windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [wx_alpha]
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    env:
+      VCPKG_ROOT: C:/vcpkg
+    steps:
+      - name: 检出源码及依赖子模块
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          submodules: recursive
+
+      - name: 安装配置 CMake 与 Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: 配置 MSVC 开发人员命令提示环境
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: 嗅探系统 WDK 与 Windows Kits 注册表信息
+        shell: pwsh
+        run: |
+          $regKey = 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots'
+          if (-not (Test-Path $regKey)) { $regKey = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots' }
+          $kitsRoot = (Get-ItemProperty -Path $regKey -ErrorAction SilentlyContinue).KitsRoot10
+          $wdkVer = 'NotFound'
+          if ($kitsRoot -and (Test-Path "$kitsRoot\Include")) { $matchedDir = Get-ChildItem "$kitsRoot\Include" | Where-Object { $_.PSIsContainer -and ($_.Name -match '^[0-9.]+$') } | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1; if ($matchedDir) { $wdkVer = $matchedDir.Name } }
+          Add-Content -Path $env:GITHUB_ENV -Value "ENV_DETECTED_KIT_ROOT=$kitsRoot"
+          Add-Content -Path $env:GITHUB_ENV -Value "ENV_DETECTED_WDK_VER=$wdkVer"
+
+      - name: 输出环境诊断信息
+        shell: pwsh
+        run: |
+          Write-Host "检测到的 Windows Kits 根目录: $env:ENV_DETECTED_KIT_ROOT"
+          Write-Host "检测到的 Windows SDK/WDK 版本号: $env:ENV_DETECTED_WDK_VER"
+
+      - name: 引导 vcpkg
+        run: C:/vcpkg/bootstrap-vcpkg.bat
+
+      - name: 安装依赖库
+        run: C:/vcpkg/vcpkg install openssl sdl2 sdl2-mixer sdl2-ttf libusb --triplet x64-windows
+
+      - name: 配置 CMake 工程
+        run: cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
+
+      - name: 编译工程
+        run: cmake --build build --config Release
+
+      - name: 嗅探构建输出并整理产物
+        shell: pwsh
+        run: |
+          $targetDir = 'dist_artifacts'
+          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+          $binFiles = Get-ChildItem -Path 'build' -Recurse -File | Where-Object { $_.Extension -in '.exe', '.dll' }
+          Write-Host '====== 嗅探到的输出文件结构 ======'
+          foreach ($file in $binFiles) { Write-Host "$($file.FullName) ($($file.Length) 字节)"; Copy-Item -Path $file.FullName -Destination $targetDir -Force }
+          Write-Host "====== 产物收集完成，共计 $($binFiles.Count) 个文件 ======"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: np2kai-windows
+          path: dist_artifacts
