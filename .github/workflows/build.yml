@@ -24,7 +24,7 @@ jobs:
         with:
           arch: x64
 
-      - name: 修复环境变量与嗅探系统信息
+      - name: 环境诊断与定向路径注入
         shell: pwsh
         run: |
           Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=C:\vcpkg"
@@ -35,17 +35,25 @@ jobs:
           if ($kitsRoot -and (Test-Path "$kitsRoot\Include")) { $matchedDir = Get-ChildItem "$kitsRoot\Include" | Where-Object { $_.PSIsContainer -and ($_.Name -match '^[0-9.]+$') } | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1; if ($matchedDir) { $wdkVer = $matchedDir.Name } }
           Add-Content -Path $env:GITHUB_ENV -Value "ENV_DETECTED_KIT_ROOT=$kitsRoot"
           Add-Content -Path $env:GITHUB_ENV -Value "ENV_DETECTED_WDK_VER=$wdkVer"
-          $srcIncludeDirs = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Include *.h,*.hpp | Where-Object { $_.FullName -notmatch '[\\/](\.git|build|vst3sdk)[\\/]' } | Select-Object -ExpandProperty DirectoryName -Unique
-          $injectedInclude = ($srcIncludeDirs -join ';') + ';' + $env:INCLUDE
-          Add-Content -Path $env:GITHUB_ENV -Value "INCLUDE=$injectedInclude"
-          Add-Content -Path $env:GITHUB_ENV -Value "SNIFFED_INCLUDE_COUNT=$($srcIncludeDirs.Count)"
+          $commonDir = Join-Path $env:GITHUB_WORKSPACE "common"
+          Add-Content -Path $env:GITHUB_ENV -Value "INCLUDE=$commonDir;$env:INCLUDE"
 
       - name: 输出环境诊断信息
         shell: pwsh
         run: |
           Write-Host "检测到的 Windows Kits 根目录: $env:ENV_DETECTED_KIT_ROOT"
           Write-Host "检测到的 Windows SDK/WDK 版本号: $env:ENV_DETECTED_WDK_VER"
-          Write-Host "嗅探到的工程头文件目录总数: $env:SNIFFED_INCLUDE_COUNT"
+
+      - name: 源码字符集转码为标准 UTF-8
+        shell: pwsh
+        run: |
+          $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
+          $sjis = [System.Text.Encoding]::GetEncoding(932)
+          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          $srcFiles = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Include *.c,*.cpp,*.h,*.hpp | Where-Object { $_.FullName -notmatch '[\\/](\.git|build|vst3sdk)[\\/]' }
+          $transcodedCount = 0
+          foreach ($file in $srcFiles) { $rawBytes = [System.IO.File]::ReadAllBytes($file.FullName); $isUtf8 = $true; try { $null = $strictUtf8.GetString($rawBytes) } catch { $isUtf8 = $false }; if (-not $isUtf8) { $content = $sjis.GetString($rawBytes); [System.IO.File]::WriteAllText($file.FullName, $content, $utf8NoBom); $transcodedCount++ } }
+          Write-Host "已完成 Shift-JIS 到 UTF-8 转码的文件数量: $transcodedCount"
 
       - name: 引导 vcpkg
         run: C:/vcpkg/bootstrap-vcpkg.bat
